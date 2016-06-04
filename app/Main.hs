@@ -5,8 +5,8 @@ import Options.Applicative
 import Control.Monad(when)
 import System.CPUTime
 import System.Directory(doesFileExist)
-import              Text.Printf(printf)
-import System.IO(readFile,hFlush,stdout,hSetBuffering,BufferMode( NoBuffering ) )
+import Text.Printf(printf)
+import System.IO(readFile,hFlush,stdout,hSetBuffering,BufferMode(NoBuffering))
 
 pflag :: Parser BFConfig
 pflag = BFConfig 

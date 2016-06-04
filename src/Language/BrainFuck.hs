@@ -156,6 +156,7 @@ optimize (Loop tokens) = Loop
                        . op4MergeAddValue
                        . op3SwitchAddValue
                        . op3SwitchPointer
+                       . op2Output
                        . op2Pointer
                        . op1Value
                        . op0 
