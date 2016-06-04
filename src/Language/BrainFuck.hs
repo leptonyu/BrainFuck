@@ -1,20 +1,22 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 
-module Language.BrainFuck(exec,BFConfig(..)) where
+module Language.BrainFuck(exec,parseExpr,parseExpr',run,BFConfig(..)) where
 
 import              Control.Monad.Except
 import              Control.Monad.State
 import              Text.Printf(printf)
 import              Data.Word(Word8)
 import              Data.Char(ord,chr,isControl,isSpace,showLitChar)
+import Text.ParserCombinators.Parsec hiding (spaces)
 import qualified    Data.List                   as L  
 import qualified    Data.Vector.Unboxed         as U
 
 
 type Byte = Word8
 
-data Token = MovePointer {-# UNPACK #-} !Int
-           | FlyPointer  {-# UNPACK #-} !Int 
+data Token = Move        {-# UNPACK #-} !Int
+           | Scan        {-# UNPACK #-} !Int 
            | AddValue    {-# UNPACK #-} !Int {-# UNPACK #-} !Byte 
            | SetValue    {-# UNPACK #-} !Int {-# UNPACK #-} !Byte 
            | SetValueIf  {-# UNPACK #-} !Int {-# UNPACK #-} !Byte {-# UNPACK #-} !Int 
@@ -34,8 +36,8 @@ instance Show Token where
           t2str i tokens           = L.intercalate "," $ fmap (go i) tokens
           go _ (Loop [])           = "[]"
           go l (Loop tokens)       = ('[':space (l+2)) ++ t2str (l+2) tokens ++ (space l) ++ "]"
-          go _ (MovePointer i)     = printf "%s %s"       "MovePointer" (i2str i)
-          go _ (FlyPointer  i)     = printf "%s %s"       "FlyPointer"  (i2str i)
+          go _ (Move        i)     = printf "%s %s"       "Move"        (i2str i)
+          go _ (Scan        i)     = printf "%s %s"       "Scan"        (i2str i)
           go _ (AddValue    i p)   = printf "%s %s %s"    "AddValue"    (i2str i) (i2str p)
           go _ (SetValue    i p)   = printf "%s %s %s"    "SetValue"    (i2str i) (i2str p)
           go _ (SetValueIf  i p j) = printf "%s %s %s %s" "SetValueIf"  (i2str i) (i2str p) (i2str j)
@@ -45,129 +47,51 @@ instance Show Token where
           go _ (Assert      i)     = printf "%s %s"       "Assert"      (i2str i)
           go _ (Empty)             =                      "Empty"
 
-data BrainFuckContext = BrainFuckContext
-    { bfStr    :: String
-    , bfPos    :: {-# UNPACK #-} !Int
-    , bfLine   :: {-# UNPACK #-} !Int
-    , bfConfig :: BFConfig
-    } deriving (Eq,Show)
 
-defaultContext :: BFConfig -> String -> BrainFuckContext
-defaultContext config str = BrainFuckContext 
-    { bfStr    = str
-    , bfPos    = 0
-    , bfLine   = 0
-    , bfConfig = config
-    }
+parseToken :: Parser Token
+parseToken =  noneOf "]" >>= \case
+                '<' -> return $ Move (-1)
+                '>' -> return $ Move   1
+                '+' -> return $ AddValue 0   1
+                '-' -> return $ AddValue 0 (-1)
+                ',' -> return $ Input  0
+                '.' -> return $ Output 0 1
+                '[' -> do
+                       tokens <- many parseToken <|> return []
+                       char ']'
+                       return $ Loop tokens
+                _   -> return   Empty
 
-isDebug :: BrainFuckContext -> Bool
-isDebug = bfDebugs . bfConfig
+parseExpr :: Parser [Token]
+parseExpr = do
+  xs <- many parseToken
+  eof
+  return xs
 
-newtype BFParser a = BFParser 
-                   { runBF :: ExceptT String (State BrainFuckContext) a 
-                   } deriving ( Monad
-                              , Applicative
-                              , Functor
-                              , MonadError String
-                              , MonadState BrainFuckContext
-                              )
+parseExpr' :: Parser [Token]
+parseExpr' = parseExpr >>= return . optimize0
 
-failLog :: String -> BrainFuckContext -> String
-failLog str context  = if isDebug context then (go str context) else str
-    where go str cxt = printf "Error %s at Position %d:%d" str (bfPos cxt) (bfPos cxt)
-
-
-updateContext :: BrainFuckContext -> String -> String -> BrainFuckContext
-updateContext cxt used unused | L.null t  = cxt{bfStr=unused ,bfPos=L.length h + bfPos cxt}
-                              | otherwise = cxt{bfStr=unused ,bfPos=L.length t            ,bfLine=bfLine cxt+1}
-                              where (h,t) = span (=='\n') used
-                  
-
-runParser :: BFParser a -> BrainFuckContext -> Either String (a, BrainFuckContext)
-runParser p cxt = case (runState . runExceptT . runBF) p cxt of
-  (Left  e,cxt') -> Left  (failLog e cxt')
-  (Right r,cxt') -> Right (r,cxt')
-
-
-(<|>) :: BFParser a -> BFParser a -> BFParser a
-p <|> q = catchError p (\_ -> q)
-
-none :: BFParser [a]
-none = return []
-
-some :: BFParser a -> BFParser [a]
-some p = do {x <- p; xs <- many p; return (x:xs)}
-
-many :: BFParser a -> BFParser [a]
-many = optional . some
-
-optional :: BFParser [a] -> BFParser [a]
-optional = (<|> none)
-
-satisfy :: (Char -> Bool) -> BFParser Char 
-satisfy p = do
-  context <- get
-  case bfStr context of
-    x:xs | p x -> put (updateContext context [x] xs) >> return x
-    x:_        -> throwError ("Unexcepted " ++ [x])
-    _          -> throwError  "Unexcepted eof"
-
-
-choice :: [BFParser a] -> BFParser a
-choice = L.foldl' (<|>) (throwError "Unexcepted Token")
-
-parseOne :: BFParser Token
-parseOne = choice [ ignore
-                  , transform '>' (MovePointer    1     )
-                  , transform '<' (MovePointer  (-1)    )
-                  , transform '+' (AddValue       0   1 )
-                  , transform '-' (AddValue       0 (-1))
-                  , transform '.' (Output         0   1 )
-                  , transform ',' (Input          0     )
-                  , parseLoop
-                  ] 
-  where transform char token = satisfy (== char)       >> return token
-        ignore               = satisfy ignoreCondition >> return Empty
-        ignoreCondition      = not . (`elem` "><+-,.[]")
-
-parseLoop :: BFParser Token
-parseLoop = do
-  consume '['
-  steps <- many parseOne
-  consume ']'
-  return $ Loop steps
-  where consume char = satisfy (== char) >> return ()
-
-eof :: BFParser ()
-eof = do 
-  s <- get
-  case bfStr s of 
-    [] -> return ()
-    _  -> throwError "Unexpected EOF"
-
-
-parse :: BFConfig -> String -> Either String ([Token], BrainFuckContext)
-parse config = runParser go . defaultContext config
-      where go :: BFParser [Token]
-            go = do {expr <- many parseOne ; eof ; return expr } 
+run :: Show a => Parser a -> String -> IO ()
+run p input = case parse p "BrainFuck" input of
+  Left  err -> putStr "Parse error at " >> print err
+  Right x   -> print x
 
 optimize :: Token -> Token
-optimize (Loop tokens) = Loop 
-                       . op4MergeAddValue
-                       . op3SwitchAddValue
-                       . op3SwitchPointer
-                       . op2Output
-                       . op2Pointer
-                       . op1Value
-                       . op0 
-                       $ tokens
+optimize (Loop tokens) = Loop $ optimize0 $ tokens
 optimize token         = token
 
+optimize0 = op4MergeAddValue
+          . op3SwitchAddValue
+          . op3SwitchPointer
+          . op2Output
+          . op2Pointer
+          . op1Value
+          . op0
+
 op0 :: [Token] -> [Token]
-op0 []     = []
-op0 (a:as) = case optimizeLoop $ optimize a of
-  [Empty] ->       op0 as
-  a'      -> a' ++ op0 as 
+op0 (Empty:vs) =                              op0 vs
+op0     (v:vs) = optimizeLoop (optimize v) ++ op0 vs
+op0        []  =                              []
 
 optimizeLoop :: Token -> [Token]
 optimizeLoop (Loop [])                                                = [Assert   0  ]
@@ -183,7 +107,7 @@ optimizeLoop (Loop (a@(AddValue 0 (-1)):vs))                          = case go 
                                       go (SetValue i m:vs'') | i /= 0 = go vs'' >>= \vs''' -> return (SetValueIf i m 0:vs''')
                                       go []                           = Just []
                                       go _                            = Nothing
-optimizeLoop (Loop [MovePointer i])                | i /= 0           = [FlyPointer i]
+optimizeLoop (Loop [Move i])                | i /= 0           = [Scan i]
                                                    | otherwise        = [Assert  0   ]
 optimizeLoop a                                                        = [a] 
 
@@ -195,8 +119,8 @@ op1Value                         (v:vs)          = v:op1Value                   
 op1Value []                                      =   []
 
 op2Pointer :: [Token] -> [Token]
-op2Pointer (MovePointer 0              :vs) =   op2Pointer                       vs
-op2Pointer (MovePointer n:MovePointer m:vs) =   op2Pointer $ MovePointer (m+n) : vs
+op2Pointer (Move 0              :vs) =   op2Pointer                       vs
+op2Pointer (Move n:Move m:vs) =   op2Pointer $ Move (m+n) : vs
 op2Pointer                           (v:vs) = v:op2Pointer                       vs
 op2Pointer []                               =   []
 
@@ -206,18 +130,18 @@ op2Output (v:vs)                              = v:op2Output                    v
 op2Output []                                  =   []
 
 op3SwitchPointer :: [Token] -> [Token]
-op3SwitchPointer (MovePointer i:AddValue   j m   :vs)             = AddValue   (i+j) m       : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:SetValue   j m   :vs)             = SetValue   (i+j) m       : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:SetValueIf j m k :vs)             = SetValueIf (i+j) m (i+k) : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:Output     j   k :vs)             = Output     (i+j)      k  : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:Input      j     :vs)             = Input      (i+j)         : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:Assert     j     :vs)             = Assert     (i+j)         : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:CopyValue  j m k :vs) | m == 0    =                            op3SwitchPointer (MovePointer i:vs)
-                                                      | otherwise = CopyValue  (i+j) m (i+k) : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:MovePointer j    :vs) | k == 0    =                            op3SwitchPointer                vs
-                                                      | otherwise =                            op3SwitchPointer (MovePointer k:vs)
-                                                      where k     = i + j
-op3SwitchPointer                               (a:vs)             = a                        : op3SwitchPointer                vs
+op3SwitchPointer (Move i:AddValue   j m   :vs)             = AddValue   (i+j) m       : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:SetValue   j m   :vs)             = SetValue   (i+j) m       : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:SetValueIf j m k :vs)             = SetValueIf (i+j) m (i+k) : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:Output     j   k :vs)             = Output     (i+j)      k  : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:Input      j     :vs)             = Input      (i+j)         : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:Assert     j     :vs)             = Assert     (i+j)         : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:CopyValue  j m k :vs) | m == 0    =                            op3SwitchPointer (Move i:vs)
+                                               | otherwise = CopyValue  (i+j) m (i+k) : op3SwitchPointer (Move i:vs)
+op3SwitchPointer (Move i:Move j           :vs) | k == 0    =                            op3SwitchPointer         vs
+                                               | otherwise =                            op3SwitchPointer (Move k:vs)
+                                               where k     = i + j
+op3SwitchPointer                        (a:vs)             = a                        : op3SwitchPointer         vs
 op3SwitchPointer []                                               = []
 
 
@@ -255,12 +179,9 @@ splitPPlus (p@(AddValue _ _):vs) = let (ps,vs') = splitPPlus vs in (p:ps,vs')
 splitPPlus vs                    = ([],vs)
 
 
-bytecode :: BFConfig -> String -> Either String [Token]
-bytecode config str = case parse config str of
-  Left            e  -> Left e
-  Right (tokens,cxt) -> let op = if (bfOptimize config) then id else optimize in
-    case op $ Loop tokens of
-      Loop tokens' -> Right tokens'
+bytecode :: BFConfig -> String -> Either ParseError [Token]
+bytecode config = parse p "BrainF**k"
+        where p = if (bfOptimize config) then parseExpr else parseExpr'
 
 type Memory = (Int,U.Vector Byte)
 
@@ -284,8 +205,8 @@ runToken _ context    (Empty)                         = return context
 runToken _ (i,vector) (Assert      j)     | jv == 0   = return (i, vector)
                                           | otherwise = error "Infinite Loop"
                                           where jv    = getInt vector (i + j)
-runToken _ (i,vector) (MovePointer j)                 = return (i + j,vector)
-runToken _ context    (FlyPointer  j)     | j == 0    = return context
+runToken _ (i,vector) (Move        j)                 = return (i + j,vector)
+runToken _ context    (Scan        j)     | j == 0    = return context
                                           | otherwise = return (go j context)
                                           where go j (i,vector) | vi == 0     = (i,vector)
                                                                 | otherwise   = go j (i + j,vector)
@@ -332,23 +253,9 @@ data BFConfig = BFConfig
   , bfFile     :: String
   } deriving (Eq,Show)
 
-
-defaultConfig :: BFConfig
-defaultConfig = BFConfig
-  { bfVerbose  = False
-  , bfDebugs   = False
-  , bfShow     = False
-  , bfTime     = False
-  , bfOptimize = False
-  , bfDryrun   = False
-  , bfSize     = 512
-  , bfExpress  = ""
-  , bfFile     = "-"
-  }
-
 exec :: BFConfig -> String -> IO ()
 exec config str  =  case bytecode config str of
-  Left  err      -> putStrLn err
+  Left  err      -> print err
   Right tokens   -> do
     when (bfShow config) (print tokens)
     if (bfDryrun config) then return ()
