@@ -43,7 +43,7 @@ instance Show Token where
           go _ (Output      i   j) = printf "%s %s %s"    "Output"      (i2str i)           (i2str j)
           go _ (Input       i)     = printf "%s %s"       "Input"       (i2str i)
           go _ (Assert      i)     = printf "%s %s"       "Assert"      (i2str i)
-          go _ (Empty)             =                       "Empty"
+          go _ (Empty)             =                      "Empty"
 
 data BrainFuckContext = BrainFuckContext
     { bfStr    :: String
@@ -78,14 +78,14 @@ failLog str context  = if isDebug context then (go str context) else str
 
 
 updateContext :: BrainFuckContext -> String -> String -> BrainFuckContext
-updateContext cxt used unused | L.null t  = cxt{bfStr=unused,bfPos=L.length h + bfPos cxt}
-                              | otherwise = cxt{bfStr=unused,bfPos=L.length t            ,bfLine=bfLine cxt+1}
+updateContext cxt used unused | L.null t  = cxt{bfStr=unused ,bfPos=L.length h + bfPos cxt}
+                              | otherwise = cxt{bfStr=unused ,bfPos=L.length t            ,bfLine=bfLine cxt+1}
                               where (h,t) = span (=='\n') used
                   
 
 runParser :: BFParser a -> BrainFuckContext -> Either String (a, BrainFuckContext)
 runParser p cxt = case (runState . runExceptT . runBF) p cxt of
-  (Left  e,cxt') -> Left (failLog e cxt')
+  (Left  e,cxt') -> Left  (failLog e cxt')
   (Right r,cxt') -> Right (r,cxt')
 
 
@@ -126,7 +126,7 @@ parseOne = choice [ ignore
                   , transform ',' (Input          0     )
                   , parseLoop
                   ] 
-  where transform char token = satisfy (== char) >> return token
+  where transform char token = satisfy (== char)       >> return token
         ignore               = satisfy ignoreCondition >> return Empty
         ignoreCondition      = not . (`elem` "><+-,.[]")
 
@@ -147,7 +147,7 @@ eof = do
 
 
 parse :: BFConfig -> String -> Either String ([Token], BrainFuckContext)
-parse config = runParser go . defaultContext config . filter (`elem` "><+-,.[]")
+parse config = runParser go . defaultContext config
       where go :: BFParser [Token]
             go = do {expr <- many parseOne ; eof ; return expr } 
 
@@ -170,11 +170,11 @@ op0 (a:as) = case optimizeLoop $ optimize a of
   a'      -> a' ++ op0 as 
 
 optimizeLoop :: Token -> [Token]
-optimizeLoop (Loop [])                                                = [Assert 0]
+optimizeLoop (Loop [])                                                = [Assert   0  ]
 optimizeLoop (Loop [AddValue 0 n])                 | n /= 0           = [SetValue 0 0]
-                                                   | otherwise        = [Assert 0]
+                                                   | otherwise        = [Assert   0  ]
 optimizeLoop (Loop [AddValue 0 (-1),SetValue i n]) | i == 0 && n == 0 = [SetValue 0 0]
-                                                   | i == 0           = [Assert 0]
+                                                   | i == 0           = [Assert   0  ]
                                                    | i /= 0           = [SetValueIf i n 0,SetValue 0 0] 
 optimizeLoop (Loop (a@(AddValue 0 (-1)):vs))                          = case go vs of
                                 Nothing  ->        [Loop (a:vs)]
@@ -184,25 +184,25 @@ optimizeLoop (Loop (a@(AddValue 0 (-1)):vs))                          = case go 
                                       go []                           = Just []
                                       go _                            = Nothing
 optimizeLoop (Loop [MovePointer i])                | i /= 0           = [FlyPointer i]
-                                                   | otherwise        = [Assert 0]
+                                                   | otherwise        = [Assert  0   ]
 optimizeLoop a                                                        = [a] 
 
 
 op1Value :: [Token] -> [Token]
-op1Value (AddValue _ 0:vs)                       =   op1Value vs
+op1Value (AddValue _ 0             :vs)          =   op1Value                     vs
 op1Value (AddValue i m:AddValue j n:vs) | i == j =   op1Value $ AddValue i (m+n): vs
-op1Value (v:vs)                                  = v:op1Value vs
+op1Value                         (v:vs)          = v:op1Value                     vs
 op1Value []                                      =   []
 
 op2Pointer :: [Token] -> [Token]
-op2Pointer (MovePointer 0:vs)               =   op2Pointer vs
+op2Pointer (MovePointer 0              :vs) =   op2Pointer                       vs
 op2Pointer (MovePointer n:MovePointer m:vs) =   op2Pointer $ MovePointer (m+n) : vs
-op2Pointer (v:vs)                           = v:op2Pointer vs
+op2Pointer                           (v:vs) = v:op2Pointer                       vs
 op2Pointer []                               =   []
 
 op2Output :: [Token] -> [Token]
 op2Output (Output i n:Output j m:vs) | i == j =   op2Output $ Output i (m+n) : vs
-op2Output (v:vs)                              = v:op2Output vs
+op2Output (v:vs)                              = v:op2Output                    vs
 op2Output []                                  =   []
 
 op3SwitchPointer :: [Token] -> [Token]
@@ -214,11 +214,11 @@ op3SwitchPointer (MovePointer i:Input      j     :vs)             = Input      (
 op3SwitchPointer (MovePointer i:Assert     j     :vs)             = Assert     (i+j)         : op3SwitchPointer (MovePointer i:vs)
 op3SwitchPointer (MovePointer i:CopyValue  j m k :vs) | m == 0    =                            op3SwitchPointer (MovePointer i:vs)
                                                       | otherwise = CopyValue  (i+j) m (i+k) : op3SwitchPointer (MovePointer i:vs)
-op3SwitchPointer (MovePointer i:MovePointer j    :vs) | k == 0    =                            op3SwitchPointer vs
+op3SwitchPointer (MovePointer i:MovePointer j    :vs) | k == 0    =                            op3SwitchPointer                vs
                                                       | otherwise =                            op3SwitchPointer (MovePointer k:vs)
                                                       where k     = i + j
+op3SwitchPointer                               (a:vs)             = a                        : op3SwitchPointer                vs
 op3SwitchPointer []                                               = []
-op3SwitchPointer (a:vs)                                           = a                        : op3SwitchPointer vs
 
 
 op3SwitchAddValue :: [Token] -> [Token]
@@ -230,13 +230,13 @@ op3SwitchAddValue (CopyValue  j m k: AddValue i n :vs) | i /= j && i /= k = AddV
 op3SwitchAddValue (Output     j   k: AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Output     j      k  :vs)
 op3SwitchAddValue (Input      j    : AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Input      j         :vs)
 op3SwitchAddValue (Assert     j    : AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Assert     j         :vs)
+op3SwitchAddValue                               (a:vs)                    =              a:op3SwitchAddValue                        vs
 op3SwitchAddValue []                                                      = []
-op3SwitchAddValue (a:vs)                                                  = a:op3SwitchAddValue vs
 
 op4MergeAddValue :: [Token] -> [Token]
 op4MergeAddValue vs = case splitPPlus vs of
   ([],[])     -> []
-  ([],(v:vs)) -> v:op4MergeAddValue vs
+  ([],(v:vs)) -> v             : op4MergeAddValue vs
   (ps,vs)     -> sortPPlus ps ++ op4MergeAddValue vs
 
 sortPPlus :: [Token] -> [Token]
@@ -245,9 +245,9 @@ sortPPlus ps = go (sortPs ps)
         cp (AddValue i _) (AddValue j _)  | i == j                       = EQ
                                           | i == 0 || ( i < j && j /= 0) = LT
                                           | otherwise                    = GT
-        go (AddValue i m:AddValue j n:vs) | i == j                       = go (AddValue i (m + n):vs)
-                                          | otherwise                    = AddValue i m : go (AddValue j n:vs)
-        go (p:ps')                                                       = p:go ps'
+        go (AddValue i m:AddValue j n:vs) | i == j                       =                go (AddValue i (m + n):vs)
+                                          | otherwise                    = AddValue i m : go (AddValue j      n :vs)
+        go                         (p:vs)                                =            p : go                     vs
         go []                                                            = []
 
 splitPPlus :: [Token] -> ([Token],[Token])
