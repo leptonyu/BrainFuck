@@ -156,6 +156,7 @@ parse config = runParser go . defaultContext config . filter (`elem` "><+-,.[]")
 optimize :: Token -> Token
 optimize (Loop tokens) = Loop 
                        . op4MergeAddValue
+                       . op3SwitchAddValue
                        . op3SwitchPointer
                        . op2Pointer
                        . op1Value
@@ -179,7 +180,8 @@ optimizeLoop (Loop [AddValue 0 (-1),SetValue i n]) | i == 0 && n == 0 = [SetValu
 optimizeLoop (Loop (a@(AddValue 0 (-1)):vs))   = case go vs of
   Nothing  -> [Loop (a:vs)]
   Just vs' -> vs' ++ [SetValue 0 0]
-  where go (AddValue i m:vs'') = go vs'' >>= \vs''' -> return (CopyValue i m 0:vs''')
+  where go (AddValue i m:vs'') =          go vs'' >>= \vs''' -> return (CopyValue  i m 0:vs''')
+        go (SetValue i m:vs'') | i /= 0 = go vs'' >>= \vs''' -> return (SetValueIf i m 0:vs''')
         go [] = Just []
         go _  = Nothing
 optimizeLoop (Loop [MovePointer i]) | i /= 0    = [FlyPointer i]
@@ -211,17 +213,21 @@ op3SwitchPointer (MovePointer i:CopyValue  j m k :vs) | m == 0    = op3SwitchPoi
 op3SwitchPointer (MovePointer i:MovePointer j    :vs) | k == 0 = op3SwitchPointer vs
                                                       | otherwise  = op3SwitchPointer (MovePointer k:vs)
                                                       where k =  i + j
-op3SwitchPointer (SetValue j m:AddValue   i n    :vs) | i == j    = op3SwitchPointer (SetValue   i (m + n):vs)
-                                                      | otherwise = AddValue   i n:op3SwitchPointer (SetValue   j m:vs)
-op3SwitchPointer (AddValue i n:SetValue   j m    :vs) | i == j    = op3SwitchPointer (SetValue   j m:vs)
-op3SwitchPointer (SetValueIf j m k: AddValue i n :vs) | i /= j && i /= k   = AddValue   i n:op3SwitchPointer (SetValueIf j m k:vs)
-op3SwitchPointer (CopyValue  j m k: AddValue i n :vs) | i /= j && i /= k   = AddValue   i n:op3SwitchPointer (CopyValue  j m k:vs)
-op3SwitchPointer (Output j :        AddValue i n :vs) | i /= j    = AddValue   i n:op3SwitchPointer (Output j:vs)
-op3SwitchPointer (Input  j :        AddValue i n :vs) | i /= j    = AddValue   i n:op3SwitchPointer (Input  j:vs)
-op3SwitchPointer (Assert j :        AddValue i n :vs) | i /= j    = AddValue   i n:op3SwitchPointer (Assert j:vs)
 op3SwitchPointer []                       = []
 op3SwitchPointer (a:vs)                   = a:op3SwitchPointer vs
 
+
+op3SwitchAddValue :: [Token] -> [Token]
+op3SwitchAddValue (SetValue j m:AddValue   i n    :vs) | i == j           =                op3SwitchAddValue (SetValue   i (m + n) :vs)
+                                                       | otherwise        = AddValue   i n:op3SwitchAddValue (SetValue   j  m      :vs)
+op3SwitchAddValue (AddValue i n:SetValue   j m    :vs) | i == j           =                op3SwitchAddValue (SetValue   j  m      :vs)
+op3SwitchAddValue (SetValueIf j m k: AddValue i n :vs) | i /= j && i /= k = AddValue   i n:op3SwitchAddValue (SetValueIf j  m   k  :vs)
+op3SwitchAddValue (CopyValue  j m k: AddValue i n :vs) | i /= j && i /= k = AddValue   i n:op3SwitchAddValue (CopyValue  j  m   k  :vs)
+op3SwitchAddValue (Output j :        AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Output     j         :vs)
+op3SwitchAddValue (Input  j :        AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Input      j         :vs)
+op3SwitchAddValue (Assert j :        AddValue i n :vs) | i /= j           = AddValue   i n:op3SwitchAddValue (Assert     j         :vs)
+op3SwitchAddValue []                       = []
+op3SwitchAddValue (a:vs)                   = a:op3SwitchAddValue vs
 
 op4MergeAddValue :: [Token] -> [Token]
 op4MergeAddValue vs = case splitPPlus vs of
