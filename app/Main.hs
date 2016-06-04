@@ -10,15 +10,15 @@ import System.IO(readFile,hFlush,stdout,hSetBuffering,BufferMode( NoBuffering ) 
 
 pflag :: Parser BFConfig
 pflag = BFConfig 
-  <$> switch    ( long "bfVerbose" <> short 'v' <> help "verbose log")
-  <*> switch    ( long "bfDebugs" <> short 'd' <> help "debug log")
-  <*> switch    ( long "bfShow" <> short 'p' <> help "show ast")
-  <*> switch    ( long "bfTime" <> short 'c' <> help "show time")
-  <*> switch    ( long "bfOptimize" <> short 'o' <> help "shutdown optimize")
-  <*> switch    ( long "bfDryrun" <> short 'r' <> help "dryrun")
-  <*> option auto ( long  "bfSize" <> short 's' <> value 512 <> showDefault  <> metavar "SIZE" <> help "memory size")
-  <*> strOption ( long "bfExpress" <> short 'e' <> help "express lang" <> value "" <> metavar "EXPRESS")
-  <*> strOption ( long "bfFile" <> short 'f' <> help "input file"   <> value "-" <> showDefault  <> metavar "INPUT" )
+  <$> switch      (long "bfVerbose"  <> short 'v' <> help "verbose log")
+  <*> switch      (long "bfDebugs"   <> short 'd' <> help "debug log")
+  <*> switch      (long "bfShow"     <> short 'p' <> help "show ast")
+  <*> switch      (long "bfTime"     <> short 'c' <> help "show time")
+  <*> switch      (long "bfOptimize" <> short 'o' <> help "shutdown optimize")
+  <*> switch      (long "bfDryrun"   <> short 'r' <> help "dryrun")
+  <*> option auto (long "bfSize"     <> short 's' <> help "memory size"  <> value 512 <> metavar "SIZE"  <> showDefault)
+  <*> strOption   (long "bfExpress"  <> short 'e' <> help "express lang" <> value ""  <> metavar "EXPRESS")
+  <*> strOption   (long "bfFile"     <> short 'f' <> help "input file"   <> value "-" <> metavar "INPUT" <> showDefault)
 
 time :: IO t -> IO t
 time a = do
@@ -42,6 +42,6 @@ main = execParser opts >>= run
              | ex   /= ""  = exec config ex
              | file == "-" = getContents >>= exec config
              | otherwise   = do 
-                  exists <- doesFileExist file
-                  if exists then readFile file >>= exec config
-                            else error "File not found!"
+                   exists <- doesFileExist file
+                   if exists then readFile file >>= exec config
+                             else error "File not found!"
