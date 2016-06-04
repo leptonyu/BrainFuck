@@ -24,7 +24,26 @@ data Token = MovePointer {-# UNPACK #-} !Int
            | Loop        [Token]
            | Assert      {-# UNPACK #-} !Int -- Must 0 at some point
            | Empty
-           deriving (Eq, Show)
+           deriving (Eq)
+
+instance Show Token where
+  show = go 2
+    where space i = '\n' : replicate i ' '
+          i2str i | i >= 0    = show i
+                  | otherwise = ('(':show i) ++ ")"
+          t2str i tokens = L.intercalate "," $ fmap (go i) tokens
+          go l (Loop [])           = "[]"
+          go l (Loop tokens)       = ('[':space (l+2)) ++ t2str (l+2) tokens ++ (space l) ++ "]"
+          go l (MovePointer i)     = printf "%s %s"       "MovePointer" (i2str i)
+          go l (FlyPointer  i)     = printf "%s %s"       "FlyPointer"  (i2str i)
+          go l (AddValue    i p)   = printf "%s %s %s"    "AddValue"    (i2str i) (i2str p)
+          go l (SetValue    i p)   = printf "%s %s %s"    "SetValue"    (i2str i) (i2str p)
+          go l (SetValueIf  i p j) = printf "%s %s %s %s" "SetValueIf"  (i2str i) (i2str p) (i2str j)
+          go l (CopyValue   i p j) = printf "%s %s %s %s" "CopyValue"   (i2str i) (i2str p) (i2str j)
+          go l (Output      i)     = printf "%s %s"       "Output"      (i2str i)
+          go l (Input       i)     = printf "%s %s"       "Input"       (i2str i)
+          go l (Assert      i)     = printf "%s %s"       "Assert"      (i2str i)
+          go l (Empty)            =                       "Empty"
 
 data BrainFuckContext = BrainFuckContext
     { bfStr    :: String
