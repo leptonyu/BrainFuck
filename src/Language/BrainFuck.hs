@@ -3,18 +3,20 @@
 
 module Language.BrainFuck(exec,parseExpr,parseExpr',run,BFConfig(..)) where
 
-import              Control.Monad(unless)
-import              Control.Monad.Except
-import              Control.Monad.State
-import              Data.Monoid((<>))
-import              Data.Word(Word8)
-import              Data.Char(ord,chr,isControl,isSpace,showLitChar)
-import              Data.Attoparsec.ByteString as B
-import qualified    Data.List             as L  
-import qualified    Data.Vector.Unboxed   as U
-import qualified    Data.ByteString.Char8 as C
-import qualified    Data.ByteString.Internal as BS (c2w, w2c)
-import qualified    Data.ByteString       as BB
+import           Control.Monad(unless)
+import           Control.Monad.ST(runST)
+import           Control.Monad.Except
+import           Control.Monad.State
+import           Data.Monoid((<>))
+import           Data.Word(Word8)
+import           Data.Char(ord,chr,isControl,isSpace,showLitChar)
+import           Data.Attoparsec.ByteString as B
+import qualified Data.List             as L  
+import qualified Data.Vector.Unboxed   as U
+import qualified Data.Vector.Unboxed.Mutable as MU
+import qualified Data.ByteString.Char8 as C
+import qualified Data.ByteString.Internal as BS (c2w, w2c)
+import qualified Data.ByteString       as BB
 
 
 type Byte = Word8
@@ -197,73 +199,133 @@ splitPPlus (p@(AddValue _ _):vs) = let (ps,vs') = splitPPlus vs in (p:ps,vs')
 splitPPlus vs                    = ([],vs)
 
 
-bytecode :: BFConfig -> C.ByteString -> Either String [Token]
-bytecode config = parseOnly (p <* B.endOfInput)
-        where p = if bfOptimize config then parseExpr else parseExpr'
+parse' :: BFConfig -> C.ByteString -> Either String [Token]
+parse' config = parseOnly (p <* B.endOfInput)
+      where p = if bfOptimize config then parseExpr else parseExpr'
 
-type Memory = (Int,U.Vector Byte)
-
-runTokens :: BFConfig -> Memory -> [Token] -> IO Memory
-runTokens config cxt (t:ts) = do
-  when (bfDebugs config) (print cxt)
-  cxt' <- runToken config cxt t
-  runTokens config cxt' ts
-runTokens _      cxt     [] = return cxt
+type Memory = (Int, U.Vector Byte, BFConfig)
+type ByteCode = Memory -> IO Memory
 
 
-{-# INLINE runLoop #-}
-runLoop :: BFConfig -> Memory -> [Token] -> IO Memory
-runLoop c context tokens = case getInt (snd context) (fst context) of
-                  0      -> return context
-                  _      -> do 
-                    context' <- L.foldl' (foldToken c) (return context) tokens
-                    runLoop c context' tokens
+{-# INLINE bcInput #-}
+bcInput :: Int -> ByteCode
+bcInput      j     (i,vector,config) = fmap (\c -> (i, setTo vector (i + j) (BS.c2w c),config)) getChar
 
-{-# INLINE foldToken #-}
-foldToken :: BFConfig -> IO Memory -> Token -> IO Memory
-foldToken c context token = do {cxt' <- context ; runToken c cxt' token}
+{-# INLINE bcOutput #-}
+bcOutput :: Int -> Int -> ByteCode
+bcOutput     j   k (i,vector,config) = let jv = getInt vector (i + j) in do 
+                                                   C.putStr $ BB.replicate k jv
+                                                   return (i,vector,config)
 
-runToken :: BFConfig -> Memory -> Token -> IO Memory
-runToken c context    (Loop   tokens)                 = runLoop c context tokens
-runToken _ context    (Empty)                         = return context
-runToken _ (i,vector) (Assert      j)     | jv == 0   = return (i, vector)
-                                          | otherwise = error "Infinite Loop"
-                                          where jv    = getInt vector (i + j)
-runToken _ (i,vector) (Move        j)                 = return (i + j,vector)
-runToken _ context    (Scan        j)     | j == 0    = return context
-                                          | otherwise = return (go j context)
-                                          where go j (i,vector) | vi == 0     = (i,vector)
-                                                                | otherwise   = go j (i + j,vector)
-                                                                where vi = getInt vector i
-runToken _ (i,vector) (AddValue    j m)   | m == 0    = return (i, vector)
-                                          | otherwise = return (i, addTo vector (i + j) m)
-runToken _ (i,vector) (SetValue    j m)               = return (i, setTo vector (i + j) m)
-runToken _ (i,vector) (SetValueIf  j m k) | v == 0    = return (i, vector)
-                                          | otherwise = return (i, setTo vector (i + j) m)
-                                          where v     = getInt vector (i + k)
-runToken _ (i,vector) (CopyValue   j m k) | m == 0    = return (i, vector)
-                                          | kv == 0   = return (i, vector)
-                                          | otherwise = return (i, addTo vector (i + j) m')
-                                          where kv    = getInt vector (i + k)
-                                                m'    = m * kv
-runToken _ (i,vector) (Output      j   k) = pch jv   >> return (i,vector)
-                                          where jv    = getInt vector (i + j)
-                                                pch c = C.putStr $ BB.replicate k jv
-runToken _ (i,vector) (Input       j)     = fmap (\c -> (i,setTo vector (i + j) (BS.c2w c))) getChar
+{-# INLINE bcCopyValue #-}
+bcCopyValue ::  Int -> Byte -> Int -> ByteCode
+bcCopyValue  j m k (i,vector,config) | m == 0    = return (i,vector,config)
+                                     | otherwise = return (i, copyTo vector (i + j) m (i + k),config)
 
+{-# INLINE bcSetValueIf #-}
+bcSetValueIf ::  Int -> Byte -> Int -> ByteCode
+bcSetValueIf j m k (i,vector,config)             = return (i, setIf vector (i + j) m (i + k),config)
+
+{-# INLINE bcSetValue #-}
+bcSetValue :: Int -> Byte -> ByteCode
+bcSetValue   j m   (i,vector,config)             = return (i, setTo vector (i + j) m,config)
+
+{-# INLINE bcAddValue #-}
+bcAddValue :: Int -> Byte -> ByteCode
+bcAddValue   j m   (i,vector,config) | m == 0    = return (i, vector,config)
+                                     | otherwise = return (i, addTo vector (i + j) m,config)
+
+{-# INLINE bcScan #-}
+bcScan :: Int -> ByteCode
+bcScan       j     (i,vector,config) | j == 0    = return (i,vector,config)
+                                     | otherwise = return (scanTo vector i j,vector,config)
+
+{-# INLINE bcMove #-}
+bcMove :: Int -> ByteCode
+bcMove       j     (i,vector,config) =             return (i + j,vector,config)
+
+{-# INLINE bcAssert #-}
+bcAssert :: Int -> ByteCode
+bcAssert     j     (i,vector,config) | m == 0    = return (i, vector,config)
+                                     | otherwise = error "Infinite Loop"
+                                     where m     = getInt vector (i + j)
+
+
+{-# INLINE loopByteCode #-}
+loopByteCode :: [ByteCode] -> ByteCode
+loopByteCode bytecodes mem@(i,vector,_) = if   getInt vector i /= 0 
+                                          then seqByteCode bytecodes mem >>= loopByteCode bytecodes 
+                                          else return mem
+
+{-# INLINE seqByteCode #-}
+seqByteCode :: [ByteCode] -> ByteCode
+seqByteCode bcs mem = L.foldl' (\m bc -> m >>= bc) (return mem) bcs
+
+{-# INLINE generateByteCode #-}
+generateByteCode :: [Token] -> [ByteCode]
+generateByteCode (Loop ts         :tokens) = loopByteCode (generateByteCode ts) : generateByteCode tokens
+generateByteCode (CopyValue  j m k:tokens) = bcCopyValue  j m k                 : generateByteCode tokens
+generateByteCode (SetValueIf j m k:tokens) = bcSetValueIf j m k                 : generateByteCode tokens
+generateByteCode (SetValue   j m  :tokens) = bcSetValue   j m                   : generateByteCode tokens
+generateByteCode (AddValue   j m  :tokens) = bcAddValue   j m                   : generateByteCode tokens
+generateByteCode (Scan       j    :tokens) = bcScan       j                     : generateByteCode tokens
+generateByteCode (Move       j    :tokens) = bcMove       j                     : generateByteCode tokens
+generateByteCode (Assert     j    :tokens) = bcAssert     j                     : generateByteCode tokens
+generateByteCode (Empty           :tokens) =                                      generateByteCode tokens
+generateByteCode (Input      j    :tokens) = bcInput      j                     : generateByteCode tokens
+generateByteCode (Output     j   k:tokens) = bcOutput     j   k                 : generateByteCode tokens
+generateByteCode [] = []
+
+
+{-# INLINE toByteCode #-}
+toByteCode :: BFConfig -> C.ByteString -> Either String ByteCode
+toByteCode config input = case parse' config input of
+           Left  err    -> Left  err
+           Right tokens -> Right . seqByteCode . generateByteCode $ tokens
 
 {-# INLINE getInt #-}
 getInt :: U.Vector Byte -> Int -> Byte
-getInt vector = (vector U.!)
+getInt vector i= runST $ do U.unsafeThaw vector >>= \v -> MU.read v i 
+
+{-# INLINE copyTo #-}
+copyTo :: U.Vector Byte -> Int -> Byte -> Int -> U.Vector Byte 
+copyTo vector i m j = runST $ do
+    v  <- U.unsafeThaw vector
+    mj <- MU.read v j
+    let m' = mj * m
+    when (m' /= 0) (MU.modify v (+m') i)
+    U.unsafeFreeze v
+
+{-# INLINE setIf #-}
+setIf :: U.Vector Byte -> Int -> Byte -> Int -> U.Vector Byte 
+setIf vector i m j = runST $ do
+  v <- U.unsafeThaw vector
+  vj <- MU.read v j
+  when (vj /= 0) (MU.write v i m)
+  U.unsafeFreeze v
+
+{-# INLINE scanTo #-}
+scanTo :: U.Vector Byte -> Int -> Int -> Int
+scanTo vector i j = runST $ do
+  U.unsafeThaw vector >>= loopScan i j
+  where loopScan i j v = do
+           vi <- MU.read v i
+           if vi == 0 then return i
+                      else loopScan (i+j) j v
 
 {-# INLINE addTo #-}
 addTo :: U.Vector Byte -> Int -> Byte -> U.Vector Byte 
-addTo vector i m = setTo vector i m'
-    where m'     = m + getInt vector i
+addTo vector i m = runST $ do
+    v  <- U.unsafeThaw vector
+    MU.modify v (+m) i
+    U.unsafeFreeze v
 
 {-# INLINE setTo #-}
 setTo :: U.Vector Byte -> Int -> Byte -> U.Vector Byte
-setTo vector i m = U.update vector $ U.singleton (i, m)
+setTo vector i m = runST $ do
+    v  <- U.unsafeThaw vector
+    MU.write v i m
+    U.unsafeFreeze v
 
 
 data BFConfig = BFConfig 
@@ -279,11 +341,11 @@ data BFConfig = BFConfig
   } deriving (Eq,Show)
 
 exec :: BFConfig -> C.ByteString -> IO ()
-exec config str  =  case bytecode config str of
+exec config str  =  case parse' config str of
   Left  err      -> print err
   Right tokens   -> do
     when (bfShow config) (C.putStrLn . toStr $ tokens)
     unless (bfDryrun config) $ do
-      mem <- runTokens config (0,U.generate (bfSize config) (const 0)) tokens
+      mem <- (seqByteCode . generateByteCode $ tokens) (0, U.generate (bfSize config) (const 0),config)
       when (bfVerbose config) (print mem)
 
