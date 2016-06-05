@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings          #-}
+
 module Main where
 
 import Language.BrainFuck
@@ -7,6 +9,7 @@ import System.CPUTime
 import System.Directory(doesFileExist)
 import Text.Printf(printf)
 import System.IO(readFile,hFlush,stdout,hSetBuffering,BufferMode(NoBuffering))
+import qualified    Data.ByteString.Char8 as C
 
 pflag :: Parser BFConfig
 pflag = BFConfig 
@@ -36,12 +39,12 @@ main = execParser opts >>= run
         run  config = if (bfTime config) then time $ run' config else run' config
         run' config = do
           hSetBuffering stdout NoBuffering
-          s <- go config (bfExpress config) (bfFile config)
+          s <- go config (C.pack $ bfExpress config) (bfFile config)
           when (bfVerbose config) (print s)
         go config ex file 
              | ex   /= ""  = exec config ex
-             | file == "-" = getContents >>= exec config
+             | file == "-" = getContents >>= exec config . C.pack
              | otherwise   = do 
                    exists <- doesFileExist file
-                   if exists then readFile file >>= exec config
+                   if exists then readFile file >>= exec config . C.pack
                              else error "File not found!"

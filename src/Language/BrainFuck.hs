@@ -1,16 +1,20 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE LambdaCase                 #-}
 
 module Language.BrainFuck(exec,parseExpr,parseExpr',run,BFConfig(..)) where
 
 import              Control.Monad.Except
 import              Control.Monad.State
-import              Text.Printf(printf)
+import              Data.Monoid((<>))
 import              Data.Word(Word8)
 import              Data.Char(ord,chr,isControl,isSpace,showLitChar)
-import Text.ParserCombinators.Parsec hiding (spaces)
-import qualified    Data.List                   as L  
-import qualified    Data.Vector.Unboxed         as U
+import              Data.Attoparsec.ByteString as B
+import qualified    Data.List             as L  
+import qualified    Data.Vector.Unboxed   as U
+import qualified    Data.ByteString.Char8 as C
+import qualified    Data.ByteString.Internal as BS (c2w, w2c)
+import qualified    Data.ByteString       as BB
 
 
 type Byte = Word8
@@ -26,55 +30,53 @@ data Token = Move        {-# UNPACK #-} !Int
            | Loop        [Token]
            | Assert      {-# UNPACK #-} !Int -- Must 0 at some point
            | Empty
-           deriving (Eq)
+           deriving (Eq,Show)
 
-instance Show Token where
-  show = go 2
-    where space i                  = '\n' : replicate i ' '
-          i2str i | i >= 0         = show i
-                  | otherwise      = ('(':show i) ++ ")"
-          t2str i tokens           = L.intercalate "," $ fmap (go i) tokens
+
+toStr :: [Token] -> C.ByteString
+toStr = go 2 . Loop
+    where space i                  = "\n" <> C.replicate i ' '
+          i2str i | i >= 0         = C.pack $ show i
+                  | otherwise      = "(" <> (C.pack $ show i) <> ")"
+          t2str i tokens           = C.intercalate "," $ fmap (go i) tokens
           go _ (Loop [])           = "[]"
-          go l (Loop tokens)       = ('[':space (l+2)) ++ t2str (l+2) tokens ++ (space l) ++ "]"
-          go _ (Move        i)     = printf "%s %s"       "Move"        (i2str i)
-          go _ (Scan        i)     = printf "%s %s"       "Scan"        (i2str i)
-          go _ (AddValue    i p)   = printf "%s %s %s"    "AddValue"    (i2str i) (i2str p)
-          go _ (SetValue    i p)   = printf "%s %s %s"    "SetValue"    (i2str i) (i2str p)
-          go _ (SetValueIf  i p j) = printf "%s %s %s %s" "SetValueIf"  (i2str i) (i2str p) (i2str j)
-          go _ (CopyValue   i p j) = printf "%s %s %s %s" "CopyValue"   (i2str i) (i2str p) (i2str j)
-          go _ (Output      i   j) = printf "%s %s %s"    "Output"      (i2str i)           (i2str j)
-          go _ (Input       i)     = printf "%s %s"       "Input"       (i2str i)
-          go _ (Assert      i)     = printf "%s %s"       "Assert"      (i2str i)
-          go _ (Empty)             =                      "Empty"
+          go l (Loop tokens)       = "[" <> space (l+2) <> t2str (l+2) tokens <> (space l) <> "]"
+          go _ (Move        i)     = "Move "       <> (i2str i)
+          go _ (Scan        i)     = "Scan "       <> (i2str i)
+          go _ (AddValue    i p)   = "AddValue "   <> (i2str i) <> " " <> (i2str p)
+          go _ (SetValue    i p)   = "SetValue "   <> (i2str i) <> " " <> (i2str p)
+          go _ (SetValueIf  i p j) = "SetValueIf " <> (i2str i) <> " " <> (i2str p) <> " " <> (i2str j)
+          go _ (CopyValue   i p j) = "CopyValue "  <> (i2str i) <> " " <> (i2str p) <> " " <> (i2str j)
+          go _ (Output      i   j) = "Output "     <> (i2str i)                     <> " " <> (i2str j)
+          go _ (Input       i)     = "Input "      <> (i2str i)
+          go _ (Assert      i)     = "Assert "     <> (i2str i)
+          go _ (Empty)             = "Empty"
 
 
 parseToken :: Parser Token
-parseToken =  noneOf "]" >>= \case
-                '<' -> return $ Move (-1)
-                '>' -> return $ Move   1
-                '+' -> return $ AddValue 0   1
-                '-' -> return $ AddValue 0 (-1)
-                ',' -> return $ Input  0
-                '.' -> return $ Output 0 1
-                '[' -> do
-                       tokens <- many parseToken <|> return []
-                       char ']'
-                       return $ Loop tokens
-                _   -> return   Empty
+parseToken =  notWord8 93 >>= \case              -- ]
+                 60 -> return $ Move (-1)        -- <
+                 62 -> return $ Move   1         -- >
+                 43 -> return $ AddValue 0   1   -- +
+                 45 -> return $ AddValue 0 (-1)  -- -
+                 44 -> return $ Input  0         -- ,
+                 46 -> return $ Output 0 1       -- .
+                 91 -> do                        -- [
+                       token  <- parseToken
+                       tokens <- B.manyTill' parseToken $ word8 93
+                       return $ Loop $ token:tokens
+                 _  -> return   Empty
 
 parseExpr :: Parser [Token]
-parseExpr = do
-  xs <- many parseToken
-  eof
-  return xs
+parseExpr = B.many' parseToken
 
 parseExpr' :: Parser [Token]
 parseExpr' = parseExpr >>= return . optimize0
 
-run :: Show a => Parser a -> String -> IO ()
-run p input = case parse p "BrainFuck" input of
-  Left  err -> putStr "Parse error at " >> print err
-  Right x   -> print x
+run :: Show a => Parser a -> C.ByteString -> IO ()
+run p input = case parseOnly (p <* B.endOfInput) input of
+        Left  e -> C.putStr   "Parse error at " >> print  e
+        Right x -> print x
 
 optimize :: Token -> Token
 optimize (Loop tokens) = Loop $ optimize0 $ tokens
@@ -107,7 +109,7 @@ optimizeLoop (Loop (a@(AddValue 0 (-1)):vs))                          = case go 
                                       go (SetValue i m:vs'') | i /= 0 = go vs'' >>= \vs''' -> return (SetValueIf i m 0:vs''')
                                       go []                           = Just []
                                       go _                            = Nothing
-optimizeLoop (Loop [Move i])                | i /= 0           = [Scan i]
+optimizeLoop (Loop [Move i])                       | i /= 0           = [Scan i]
                                                    | otherwise        = [Assert  0   ]
 optimizeLoop a                                                        = [a] 
 
@@ -119,10 +121,10 @@ op1Value                         (v:vs)          = v:op1Value                   
 op1Value []                                      =   []
 
 op2Pointer :: [Token] -> [Token]
-op2Pointer (Move 0              :vs) =   op2Pointer                       vs
+op2Pointer (Move 0       :vs) =   op2Pointer                       vs
 op2Pointer (Move n:Move m:vs) =   op2Pointer $ Move (m+n) : vs
-op2Pointer                           (v:vs) = v:op2Pointer                       vs
-op2Pointer []                               =   []
+op2Pointer             (v:vs) = v:op2Pointer                       vs
+op2Pointer []                 =   []
 
 op2Output :: [Token] -> [Token]
 op2Output (Output i n:Output j m:vs) | i == j =   op2Output $ Output i (m+n) : vs
@@ -179,8 +181,8 @@ splitPPlus (p@(AddValue _ _):vs) = let (ps,vs') = splitPPlus vs in (p:ps,vs')
 splitPPlus vs                    = ([],vs)
 
 
-bytecode :: BFConfig -> String -> Either ParseError [Token]
-bytecode config = parse p "BrainF**k"
+bytecode :: BFConfig -> C.ByteString -> Either String [Token]
+bytecode config = parseOnly (p <* B.endOfInput)
         where p = if (bfOptimize config) then parseExpr else parseExpr'
 
 type Memory = (Int,U.Vector Byte)
@@ -223,11 +225,9 @@ runToken _ (i,vector) (CopyValue   j m k) | m == 0    = return (i, vector)
                                           where kv    = getInt vector (i + k)
                                                 m'    = m * kv
 runToken _ (i,vector) (Output      j   k) = pch jv   >> return (i,vector)
-                                          where jv    = chr $ fromIntegral $ getInt vector (i + j)
-                                                isp c = isControl c && not (isSpace c || c == '\ESC')
-                                                pch c | isp c     = putStr $ concat $ replicate k (showLitChar c "")
-                                                      | otherwise = putStr          $ replicate k c
-runToken _ (i,vector) (Input       j)     = getChar >>= return . \c -> (i,setTo vector (i + j) (fromIntegral $ ord c))
+                                          where jv    = getInt vector (i + j)
+                                                pch c = C.putStr $ BB.replicate k jv
+runToken _ (i,vector) (Input       j)     = getChar >>= return . \c -> (i,setTo vector (i + j) (BS.c2w c))
 
 
 getInt :: U.Vector Byte -> Int -> Byte
@@ -253,11 +253,11 @@ data BFConfig = BFConfig
   , bfFile     :: String
   } deriving (Eq,Show)
 
-exec :: BFConfig -> String -> IO ()
+exec :: BFConfig -> C.ByteString -> IO ()
 exec config str  =  case bytecode config str of
   Left  err      -> print err
   Right tokens   -> do
-    when (bfShow config) (print tokens)
+    when (bfShow config) (C.putStrLn . toStr $ tokens)
     if (bfDryrun config) then return ()
     else do 
       mem <- runTokens config (0,U.generate (bfSize config) (\_ -> 0)) tokens

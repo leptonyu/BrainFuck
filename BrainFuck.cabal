@@ -20,7 +20,8 @@ library
                      , vector
                      , mtl
                      , transformers
-                     , parsec
+                     , bytestring
+                     , attoparsec
   default-language:    Haskell2010
 
 executable bf-exe
@@ -30,6 +31,7 @@ executable bf-exe
   build-depends:       base
                      , directory
                      , optparse-applicative
+                     , bytestring
                      , BrainFuck
   default-language:    Haskell2010
 
