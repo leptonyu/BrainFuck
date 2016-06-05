@@ -28,7 +28,7 @@ time a = do
     start <- getCPUTime
     v <- a
     end   <- getCPUTime
-    let diff = (fromIntegral (end - start)) / (10^12)
+    let diff = fromIntegral (end - start) / (10^12)
     printf "\nComputation time: %0.3f sec\n" (diff :: Double)
     return v
 
@@ -36,7 +36,7 @@ time a = do
 main :: IO ()
 main = execParser opts >>= run
   where opts        = info (helper <*> pflag) fullDesc
-        run  config = if (bfTime config) then time $ run' config else run' config
+        run  config = if bfTime config then time $ run' config else run' config
         run' config = do
           hSetBuffering stdout NoBuffering
           s <- go config (C.pack $ bfExpress config) (bfFile config)

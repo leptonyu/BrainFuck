@@ -1,9 +1,9 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE LambdaCase                 #-}
 
 module Language.BrainFuck(exec,parseExpr,parseExpr',run,BFConfig(..)) where
 
+import              Control.Monad(unless)
 import              Control.Monad.Except
 import              Control.Monad.State
 import              Data.Monoid((<>))
@@ -32,27 +32,34 @@ data Token = Move        {-# UNPACK #-} !Int
            | Empty
            deriving (Eq,Show)
 
+{-# INLINE i2str #-}
+i2str :: (Show a,Num a,Ord a) => a -> C.ByteString
+i2str i | i >= 0    = C.pack $ show i
+        | otherwise = "(" <> C.pack ( show i) <> ")"
+
+{-# INLINE i2space #-}
+i2space :: Int -> C.ByteString
+i2space i = "\n" <> C.replicate i ' '
+
 
 toStr :: [Token] -> C.ByteString
 toStr = go 2 . Loop
-    where space i                  = "\n" <> C.replicate i ' '
-          i2str i | i >= 0         = C.pack $ show i
-                  | otherwise      = "(" <> (C.pack $ show i) <> ")"
-          t2str i tokens           = C.intercalate "," $ fmap (go i) tokens
+    where t2str i tokens           = C.intercalate "," $ fmap (go i) tokens
           go _ (Loop [])           = "[]"
-          go l (Loop tokens)       = "[" <> space (l+2) <> t2str (l+2) tokens <> (space l) <> "]"
-          go _ (Move        i)     = "Move "       <> (i2str i)
-          go _ (Scan        i)     = "Scan "       <> (i2str i)
-          go _ (AddValue    i p)   = "AddValue "   <> (i2str i) <> " " <> (i2str p)
-          go _ (SetValue    i p)   = "SetValue "   <> (i2str i) <> " " <> (i2str p)
-          go _ (SetValueIf  i p j) = "SetValueIf " <> (i2str i) <> " " <> (i2str p) <> " " <> (i2str j)
-          go _ (CopyValue   i p j) = "CopyValue "  <> (i2str i) <> " " <> (i2str p) <> " " <> (i2str j)
-          go _ (Output      i   j) = "Output "     <> (i2str i)                     <> " " <> (i2str j)
-          go _ (Input       i)     = "Input "      <> (i2str i)
-          go _ (Assert      i)     = "Assert "     <> (i2str i)
+          go l (Loop tokens)       = "[" <> i2space (l+2) <> t2str (l+2) tokens <> i2space l <> "]"
+          go _ (Move        i)     = "Move "       <> i2str i
+          go _ (Scan        i)     = "Scan "       <> i2str i
+          go _ (AddValue    i p)   = "AddValue "   <> i2str i <> " " <> i2str p
+          go _ (SetValue    i p)   = "SetValue "   <> i2str i <> " " <> i2str p
+          go _ (SetValueIf  i p j) = "SetValueIf " <> i2str i <> " " <> i2str p <> " " <> i2str j
+          go _ (CopyValue   i p j) = "CopyValue "  <> i2str i <> " " <> i2str p <> " " <> i2str j
+          go _ (Output      i   j) = "Output "     <> i2str i                   <> " " <> i2str j
+          go _ (Input       i)     = "Input "      <> i2str i
+          go _ (Assert      i)     = "Assert "     <> i2str i
           go _ (Empty)             = "Empty"
 
 
+{-# INLINE parseToken #-}
 parseToken :: Parser Token
 parseToken =  notWord8 93 >>= \case              -- ]
                  60 -> return $ Move (-1)        -- <
@@ -71,7 +78,7 @@ parseExpr :: Parser [Token]
 parseExpr = B.many' parseToken
 
 parseExpr' :: Parser [Token]
-parseExpr' = parseExpr >>= return . optimize0
+parseExpr' = fmap optimize0 parseExpr
 
 run :: Show a => Parser a -> C.ByteString -> IO ()
 run p input = case parseOnly (p <* B.endOfInput) input of
@@ -79,7 +86,7 @@ run p input = case parseOnly (p <* B.endOfInput) input of
         Right x -> print x
 
 optimize :: Token -> Token
-optimize (Loop tokens) = Loop $ optimize0 $ tokens
+optimize (Loop tokens) = Loop . optimize0 $ tokens
 optimize token         = token
 
 optimize0 = op4MergeAddValue
@@ -90,6 +97,7 @@ optimize0 = op4MergeAddValue
           . op1Value
           . op0
 
+{-# INLINE op0 #-}
 op0 :: [Token] -> [Token]
 op0 (Empty:vs) =                              op0 vs
 op0     (v:vs) = optimizeLoop (optimize v) ++ op0 vs
@@ -114,23 +122,28 @@ optimizeLoop (Loop [Move i])                       | i /= 0           = [Scan i]
 optimizeLoop a                                                        = [a] 
 
 
+{-# INLINE op1Value #-}
 op1Value :: [Token] -> [Token]
 op1Value (AddValue _ 0             :vs)          =   op1Value                     vs
 op1Value (AddValue i m:AddValue j n:vs) | i == j =   op1Value $ AddValue i (m+n): vs
 op1Value                         (v:vs)          = v:op1Value                     vs
 op1Value []                                      =   []
 
+{-# INLINE op2Pointer #-}
 op2Pointer :: [Token] -> [Token]
 op2Pointer (Move 0       :vs) =   op2Pointer                       vs
 op2Pointer (Move n:Move m:vs) =   op2Pointer $ Move (m+n) : vs
 op2Pointer             (v:vs) = v:op2Pointer                       vs
 op2Pointer []                 =   []
 
+{-# INLINE op2Output #-}
 op2Output :: [Token] -> [Token]
 op2Output (Output i n:Output j m:vs) | i == j =   op2Output $ Output i (m+n) : vs
 op2Output (v:vs)                              = v:op2Output                    vs
 op2Output []                                  =   []
 
+
+{-# INLINE op3SwitchPointer #-}
 op3SwitchPointer :: [Token] -> [Token]
 op3SwitchPointer (Move i:AddValue   j m   :vs)             = AddValue   (i+j) m       : op3SwitchPointer (Move i:vs)
 op3SwitchPointer (Move i:SetValue   j m   :vs)             = SetValue   (i+j) m       : op3SwitchPointer (Move i:vs)
@@ -147,6 +160,7 @@ op3SwitchPointer                        (a:vs)             = a                  
 op3SwitchPointer []                                               = []
 
 
+{-# INLINE op3SwitchAddValue #-}
 op3SwitchAddValue :: [Token] -> [Token]
 op3SwitchAddValue (SetValue   j m  : AddValue i n :vs) | i == j           =                op3SwitchAddValue (SetValue   i (m + n) :vs)
                                                        | otherwise        = AddValue   i n:op3SwitchAddValue (SetValue   j  m      :vs)
@@ -159,12 +173,14 @@ op3SwitchAddValue (Assert     j    : AddValue i n :vs) | i /= j           = AddV
 op3SwitchAddValue                               (a:vs)                    =              a:op3SwitchAddValue                        vs
 op3SwitchAddValue []                                                      = []
 
+{-# INLINE op4MergeAddValue #-}
 op4MergeAddValue :: [Token] -> [Token]
 op4MergeAddValue vs = case splitPPlus vs of
   ([],[])     -> []
-  ([],(v:vs)) -> v             : op4MergeAddValue vs
-  (ps,vs)     -> sortPPlus ps ++ op4MergeAddValue vs
+  ([],v:vs)   -> v             : op4MergeAddValue vs
+  (ps,  vs)   -> sortPPlus ps ++ op4MergeAddValue vs
 
+{-# INLINE sortPPlus #-}
 sortPPlus :: [Token] -> [Token]
 sortPPlus ps = go (sortPs ps)
   where sortPs = L.sortBy cp
@@ -183,7 +199,7 @@ splitPPlus vs                    = ([],vs)
 
 bytecode :: BFConfig -> C.ByteString -> Either String [Token]
 bytecode config = parseOnly (p <* B.endOfInput)
-        where p = if (bfOptimize config) then parseExpr else parseExpr'
+        where p = if bfOptimize config then parseExpr else parseExpr'
 
 type Memory = (Int,U.Vector Byte)
 
@@ -194,15 +210,21 @@ runTokens config cxt (t:ts) = do
   runTokens config cxt' ts
 runTokens _      cxt     [] = return cxt
 
+
+{-# INLINE runLoop #-}
+runLoop :: BFConfig -> Memory -> [Token] -> IO Memory
+runLoop c context tokens = case getInt (snd context) (fst context) of
+                  0      -> return context
+                  _      -> do 
+                    context' <- L.foldl' (foldToken c) (return context) tokens
+                    runLoop c context' tokens
+
+{-# INLINE foldToken #-}
+foldToken :: BFConfig -> IO Memory -> Token -> IO Memory
+foldToken c context token = do {cxt' <- context ; runToken c cxt' token}
+
 runToken :: BFConfig -> Memory -> Token -> IO Memory
-runToken c context    (Loop   tokens)     = let (i,vector) = context
-                                                iv         = getInt vector i in case iv of
-                                                     0     -> return context
-                                                     _     -> do
-                                                       con <- L.foldl' f (return (i,vector)) tokens 
-                                                       when (bfDebugs c) (print con)
-                                                       runToken c con (Loop tokens)
-                                                     where f ct token = do {cxt' <- ct ; runToken c cxt' token}
+runToken c context    (Loop   tokens)                 = runLoop c context tokens
 runToken _ context    (Empty)                         = return context
 runToken _ (i,vector) (Assert      j)     | jv == 0   = return (i, vector)
                                           | otherwise = error "Infinite Loop"
@@ -227,16 +249,19 @@ runToken _ (i,vector) (CopyValue   j m k) | m == 0    = return (i, vector)
 runToken _ (i,vector) (Output      j   k) = pch jv   >> return (i,vector)
                                           where jv    = getInt vector (i + j)
                                                 pch c = C.putStr $ BB.replicate k jv
-runToken _ (i,vector) (Input       j)     = getChar >>= return . \c -> (i,setTo vector (i + j) (BS.c2w c))
+runToken _ (i,vector) (Input       j)     = fmap (\c -> (i,setTo vector (i + j) (BS.c2w c))) getChar
 
 
+{-# INLINE getInt #-}
 getInt :: U.Vector Byte -> Int -> Byte
 getInt vector = (vector U.!)
 
+{-# INLINE addTo #-}
 addTo :: U.Vector Byte -> Int -> Byte -> U.Vector Byte 
 addTo vector i m = setTo vector i m'
-    where m'     = m + (getInt vector i)
+    where m'     = m + getInt vector i
 
+{-# INLINE setTo #-}
 setTo :: U.Vector Byte -> Int -> Byte -> U.Vector Byte
 setTo vector i m = U.update vector $ U.singleton (i, m)
 
@@ -258,8 +283,7 @@ exec config str  =  case bytecode config str of
   Left  err      -> print err
   Right tokens   -> do
     when (bfShow config) (C.putStrLn . toStr $ tokens)
-    if (bfDryrun config) then return ()
-    else do 
-      mem <- runTokens config (0,U.generate (bfSize config) (\_ -> 0)) tokens
+    unless (bfDryrun config) $ do
+      mem <- runTokens config (0,U.generate (bfSize config) (const 0)) tokens
       when (bfVerbose config) (print mem)
 
