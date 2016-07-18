@@ -1,3 +1,4 @@
 .stack*
 .DS_Store
 bf-exe.*
+stack/
