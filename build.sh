@@ -94,8 +94,12 @@ fi
 GO=`docker images -q $FROM`
 
 docker build --rm --no-cache -t $TEMP_LABEL --build-arg PACK=$PACK . \
-&& docker run --rm $TEMP_LABEL | docker build --rm --no-cache -t $LABEL - \
-&& docker rmi $TEMP_LABEL
+&& docker run --rm $TEMP_LABEL | docker build --rm --no-cache -t $LABEL -
+
+TID=`docker images -q $TEMP_LABEL`
+if [ -n "$TID" ]; then
+  docker rmi -f $TEMP_LABEL
+fi
 
 rm -f "$FILE"
 
