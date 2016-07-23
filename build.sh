@@ -72,7 +72,6 @@ RUN chmod +x make.sh \
       && upx --lzma --best main \
   ; fi \
  && echo "FROM scratch"            > Dockerfile \
- && echo "WORKDIR /src"           >> Dockerfile \
  && echo "COPY main  /main"       >> Dockerfile \
  && echo "ENTRYPOINT [\"/main\"]" >> Dockerfile
 
