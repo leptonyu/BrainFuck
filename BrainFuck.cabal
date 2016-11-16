@@ -27,7 +27,7 @@ library
 executable bf-exe
   hs-source-dirs:      app
   main-is:             Main.hs
-  ghc-options:         -static -rtsopts=none -optl-static -O2 -threaded -funbox-strict-fields
+  ghc-options:         -rtsopts=none -O2 -threaded -funbox-strict-fields
   build-depends:       base
                      , directory
                      , optparse-applicative
