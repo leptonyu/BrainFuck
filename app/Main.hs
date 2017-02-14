@@ -5,6 +5,7 @@ module Main where
 import Language.BrainFuck
 import Options.Applicative
 import Control.Monad(when)
+import Data.Monoid((<>))
 import System.CPUTime
 import System.Directory(doesFileExist)
 import Text.Printf(printf)
