@@ -28,7 +28,7 @@ if [ -z "$FROM" ]; then
 fi
 
 NAME=`basename "$ROOT"`
-LABEL=icymint/$NAME
+LABEL=icymint/$NAME:`date +%Y%m%d`
 TEMP_LABEL=$LABEL-builder
 FILE="$ROOT/Dockerfile"
 PACK=true
